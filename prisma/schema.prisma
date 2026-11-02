@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model Organization {
+  id                       String    @id @default(cuid()) @db.VarChar(30)
+  name                     String    @db.VarChar(100)
+  defaultLowStockThreshold  Int       @default(5)
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  owner                    User?
+  products                 Product[]
+}
+
+model User {
+  id             String       @id @default(cuid()) @db.VarChar(30)
+  organizationId String       @unique @db.VarChar(30)
+  email          String       @unique @db.VarChar(254)
+  passwordHash   String       @db.VarChar(255)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sessions       Session[]
+  editedProducts Product[]
+}
+
+model Session {
+  id        String   @id @default(cuid()) @db.VarChar(30)
+  tokenHash String   @unique @db.Char(64)
+  userId    String   @db.VarChar(30)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+model Product {
+  id                String       @id @default(cuid()) @db.VarChar(30)
+  organizationId    String       @db.VarChar(30)
+  name              String       @db.VarChar(150)
+  sku               String       @db.VarChar(64)
+  description       String?      @db.Text
+  quantityOnHand    Int          @default(0)
+  costPrice         Decimal?     @db.Decimal(12, 2)
+  sellingPrice      Decimal?     @db.Decimal(12, 2)
+  lowStockThreshold Int?
+  lastUpdatedBy     String       @db.VarChar(30)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  updatedBy         User         @relation(fields: [lastUpdatedBy], references: [id])
+  @@unique([organizationId, sku])
+  @@index([organizationId, updatedAt])
+}
+
+model AuthAttempt {
+  key       String   @id @db.Char(64)
+  count     Int      @default(1)
+  expiresAt DateTime
+  @@index([expiresAt])
+}

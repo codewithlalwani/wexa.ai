@@ -1,0 +1,250 @@
+StockFlow MVP — Implementation and Deployment Plan
+Based on: proj.txt
+Required stack: Next.js + Node.js + MySQL
+Target: a working, deployed demo/internal-use MVP in approximately six hours.
+
+1. Architecture and scope
+
+- Use Next.js App Router, TypeScript, and Tailwind CSS for the interface.
+- Run the backend on Node.js using Next.js Route Handlers. This satisfies the
+  Next.js/Node.js stack with one application and one deployment; a separate
+  Express server is unnecessary for this MVP.
+- Use MySQL for persistent storage and Prisma ORM 7 with the MySQL provider.
+  Pin compatible Prisma CLI/client versions and their required adapter, and
+  commit the lockfile. Do not blindly upgrade to an ORM major without MySQL support.
+- Pin a supported Node.js LTS version compatible with the selected dependencies
+  in local development, CI, and production.
+- Use server-rendered pages for initial data and client components for forms,
+  search, and delete confirmation. Keep database/auth code server-only.
+- Use the Node.js runtime for database and authentication operations.
+- Deploy one Node.js web service and one persistent MySQL database in one region.
+- Keep organization inventory responses dynamic and private; do not place
+  authenticated data in shared/public caches.
+
+Required: signup/login/logout, organization isolation, product CRUD, direct
+quantity editing, dashboard totals, low-stock list, and product search.
+Optional: settings page and inline stock adjustments. Default threshold is 5
+even if the settings page is deferred.
+
+Excluded: warehouses, variants, categories, images, integrations, orders,
+suppliers, CSV imports, invitations, staff roles, billing, email notifications,
+password-reset UI, detailed movement history, charts, and external API access.
+
+2. Data model
+
+Organization
+- id, name, defaultLowStockThreshold (integer, default 5), createdAt, updatedAt.
+
+User
+- id, organizationId (foreign key, unique for one owner per organization),
+  email (normalized, globally unique), passwordHash, createdAt, updatedAt.
+- Create the organization and its owner together in one database transaction.
+
+Session
+- id, tokenHash (unique), userId (foreign key), expiresAt, createdAt.
+- Store only the hash of a random session token in MySQL; place the token in
+  the browser cookie. Database sessions survive application restarts.
+
+Product
+- id, organizationId (foreign key), name, sku, description (nullable),
+  quantityOnHand (integer, default 0), costPrice (nullable DECIMAL(12,2)),
+  sellingPrice (nullable DECIMAL(12,2)), lowStockThreshold (nullable integer),
+  lastUpdatedBy (user foreign key), createdAt, updatedAt.
+- Unique constraint on (organizationId, sku); index organizationId.
+- Normalize SKU by trimming and uppercasing before storage and lookup.
+- Use decimal strings at API boundaries for money to avoid float rounding.
+- Proposed MVP rule: quantities, prices, and thresholds cannot be negative.
+  Validate integer/decimal bounds and string lengths on the server.
+- Null product threshold inherits the organization's default; zero is a valid
+  explicit threshold and must not be treated as empty.
+- Hard delete products after user confirmation, as allowed by proj.txt.
+
+3. Authentication and tenant isolation
+
+- Signup: validate email, password, confirmation, and organization name;
+  hash passwords using a maintained password-hashing library (Argon2id),
+  create records transactionally, establish session, and open Dashboard.
+- Login: verify credentials and issue a fresh session. Use generic errors
+  for failed credentials and rate-limit authentication attempts.
+- Cookies: HttpOnly, SameSite=Lax, Secure in production, Path=/, explicit expiry.
+- Logout: revoke the session in MySQL and clear the cookie.
+- Validate session expiry on every protected server operation.
+- Derive organizationId exclusively from the authenticated user. Never trust
+  an organization ID provided by a form, URL parameter, or JSON body.
+- Scope every read, aggregate, update, and delete by organizationId, including
+  product-ID lookups. Return 404 for products outside the current organization.
+- Protect mutations with same-origin/CSRF checks; GET requests must not mutate.
+- Parameterize database access through the ORM and exclude passwords, tokens,
+  and connection strings from logs and responses.
+
+4. Screens and backend endpoints
+
+Screens
+- /signup: email, password, confirm password, organization name.
+- /login: email and password.
+- /dashboard: total products, sum of quantities, and low-stock table.
+- /products: name, SKU, quantity, low-stock indicator, selling price, search,
+  add/edit actions, and delete confirmation.
+- /products/new: create form including optional description.
+- /products/[id]/edit: reuse form for viewing/editing all product fields.
+- /settings: optional organization default threshold form.
+- Shared navigation, logout, empty/loading/error states, and field feedback.
+
+Internal Route Handlers
+- POST /api/auth/signup, POST /api/auth/login, POST /api/auth/logout.
+- GET /api/products?search=...: tenant-scoped name/SKU search.
+- POST /api/products: validated create; duplicate SKU returns 409.
+- GET /api/products/[id]: tenant-scoped detail.
+- PATCH /api/products/[id]: validated update, including absolute quantity.
+- DELETE /api/products/[id]: tenant-scoped delete.
+- GET /api/dashboard: counts, quantity total, and low-stock items.
+- GET/PATCH /api/settings: optional organization threshold settings.
+- GET /api/health: minimal readiness response, 503 if MySQL is unavailable.
+
+Use shared server services for authorization and business rules. Server
+components can call these directly without an HTTP request to their own API.
+Return consistent validation errors; use 401 for missing/expired sessions.
+
+Low-stock rule:
+  effectiveThreshold = product.lowStockThreshold ?? organization.defaultLowStockThreshold
+  isLowStock = product.quantityOnHand <= effectiveThreshold
+
+Use the same rule in dashboard and product list. Compute dashboard totals over
+all organization products, independent of list search or pagination. Empty totals
+are zero. After mutations, refresh affected views so counts and indicators agree.
+
+5. Proposed repository layout
+
+src/app/(auth)/                  Login and signup pages
+src/app/(inventory)/             Dashboard, products, settings, protected layout
+src/app/api/                     Route Handlers
+src/components/                  Forms, tables, navigation, shared UI
+src/lib/db.ts                    Reused Prisma client/connection configuration
+src/lib/auth.ts                  Session helpers and authorization
+src/lib/validation.ts            Shared input schemas
+src/services/                   Products, dashboard, organization operations
+prisma/schema.prisma             MySQL data model
+prisma/migrations/               Reviewed and committed database migrations
+prisma.config.ts                 Version-appropriate Prisma configuration
+tests/                          Auth, tenant isolation, inventory checks
+.env.example                    Placeholder configuration only
+README.md                       Local setup, deployment, and demo instructions
+
+6. Six-hour execution order
+
+00:00–00:30 — Foundation and hosting preparation
+- Scaffold Next.js/TypeScript/Tailwind, pin dependencies, and define env vars.
+- Prepare MySQL and hosting access early; confirm database connectivity.
+- Create schema and initial migration; add health endpoint and shared layout.
+
+00:30–01:30 — Authentication and organizations
+- Implement transactional signup, login/logout, password hashing, and sessions.
+- Add protected pages and reusable tenant authorization.
+- Verify two accounts receive different organizations.
+
+01:30–03:00 — Products and inventory
+- Build validated CRUD services, endpoints, product table, and reusable form.
+- Implement direct quantity edits, search, duplicate-SKU handling, and delete
+  confirmation. Record lastUpdatedBy and timestamps.
+
+03:00–03:45 — Dashboard
+- Implement total products, total quantity, and low-stock table.
+- Verify threshold inheritance, explicit zero, and empty organization behavior.
+- Add settings only if the required flow is already working.
+
+03:45–04:45 — Verification and interface cleanup
+- Test cross-tenant access, authentication, CRUD, validation, and dashboard math.
+- Add clear errors and empty states; verify desktop usability.
+- Run lint, type checking, targeted tests, and production build.
+
+04:45–06:00 — Deploy and demonstrate
+- Configure production environment, apply migrations, and start the web service.
+- Verify HTTPS, cookie behavior, health endpoint, persistence, and deployed flow.
+- Document the deployed URL, setup steps, limitations, and recovery steps.
+
+Assumption: hosting credentials and database access are available at the start.
+This is an estimate for a demo MVP. If time is tight, defer settings and inline
+adjustments first; retain tenant-isolation checks and deployment verification.
+
+7. Deployment plan
+
+Default topology: a managed Node.js web service (for example Render) connected
+to an independently provisioned managed MySQL database. Select the database
+provider by region availability, connectivity, backups, and budget. This plan
+does not assume the web host supplies managed MySQL or that hosting is free.
+
+Configuration
+- DATABASE_URL: MySQL connection URL, with credentials URL-encoded as needed.
+- APP_URL: the canonical HTTPS application URL for origin checks.
+- NODE_ENV=production; PORT supplied by the host.
+- SESSION_TTL_SECONDS: explicit session lifetime, e.g. 604800 (seven days).
+- Keep database credentials and other secrets server-side in hosting secrets;
+  never expose them through NEXT_PUBLIC_* variables or commit .env files.
+- Use separate development and production databases.
+- Require verified database TLS according to the provider's configuration;
+  restrict network access to the application/migration runner where supported.
+- Use a limited runtime database user and separate migration privileges where
+  practical. Set a small connection pool appropriate to the database limit.
+
+Release steps
+1. Create the MySQL database and configure credentials, TLS, and network access.
+2. Connect the application repository to the Node.js web service.
+3. Configure runtime version and production environment variables.
+4. Build: npm ci && npx prisma generate && npm run build.
+5. Run the committed migrations once in the release job:
+   npx prisma migrate deploy
+   These commands target the pinned Prisma 7 toolchain. Make the CLI available
+   in the release environment and fail the release if migrations fail.
+6. Start: npm run start -- --hostname 0.0.0.0 --port "$PORT"
+   Define the start script as next start. Use the host-assigned port.
+7. Configure /api/health as the readiness endpoint and enable HTTPS.
+8. Register a demo account through the deployed UI and complete the smoke test.
+
+Run the application as a Node.js web service: its sessions, database operations,
+and API handlers require server execution. Do not deploy it as a static export.
+Keep application data in MySQL, not the web service's temporary filesystem.
+Database migration commands must not run from request handlers or on every request.
+Do not use development migrations, database resets, or destructive schema pushes
+against production. Build must not require querying live tenant data.
+
+Operations and rollback
+- Enable database backups and verify the provider's retention/restore procedure.
+- Log request errors without sensitive payloads; monitor availability and DB errors.
+- Retain the previous successful application release for rollback.
+- Prefer backward-compatible migrations so the previous release still works.
+- An application rollback does not reverse database migrations. Use a reviewed
+  corrective migration or database restore if required, accounting for lost writes.
+- Before later public use, add password recovery and reassess operational limits.
+
+8. Acceptance checks
+
+- A new user signs up, logs out, logs in, and lands on Dashboard.
+- Organization/user creation is atomic; duplicate email creates no orphan org.
+- User A cannot list, read, edit, delete, or count User B's products, even by
+  submitting B's product ID directly to endpoints.
+- The same SKU is allowed in different organizations and rejected within one.
+- Product creation/editing preserves optional decimal prices and description.
+- Negative/fractional quantities and invalid prices are rejected server-side.
+- Quantity equal to threshold appears as low stock; quantity above it does not.
+- Null threshold uses default 5; explicit threshold zero remains zero.
+- Dashboard totals and low-stock list refresh after create/update/delete.
+- Delete requires confirmation; empty inventory shows zero totals and useful UI.
+- Expired/revoked sessions cannot access protected operations.
+- Production build passes; HTTPS login cookies work on the deployed domain.
+- Products and valid sessions survive a web-service restart/redeployment.
+- The entire demo works in a browser without manual database edits.
+
+9. Completion deliverables
+
+- Next.js/Node.js application, MySQL schema, and committed migrations.
+- Working deployed URL with the end-to-end signup/inventory/dashboard flow.
+- Environment example and README with local setup and deployment instructions.
+- Targeted verification results and documented deferred optional features.
+
+Reference documentation
+- Next.js Node.js deployment:
+  https://nextjs.org/docs/app/getting-started/deploying
+- Render Next.js web-service setup:
+  https://render.com/docs/deploy-nextjs-app
+- Prisma 7 production migration command:
+  https://www.prisma.io/docs/cli/v7/migrate/deploy
