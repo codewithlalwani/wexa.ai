@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: wexa
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && bash scripts/render-build.sh
+    startCommand: bash scripts/render-start.sh
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: HOSTNAME
+        value: 0.0.0.0
+      - key: DATABASE_URL
+        sync: false
+      - key: DB_SSL
+        value: "true"
+      - key: DB_SSL_CA_FILE
+        value: /etc/secrets/mysql-ca.pem
+      - key: DB_ALLOW_PUBLIC_KEY_RETRIEVAL
+        value: "false"
+      - key: DB_CONNECTION_LIMIT
+        value: "5"
+      - key: SESSION_TTL_SECONDS
+        value: "604800"
